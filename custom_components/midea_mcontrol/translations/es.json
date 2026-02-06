@@ -1,0 +1,22 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Midea M-Control Cloud",
+        "description": "Ingresa tus credenciales de aircontrolbase.com.",
+        "data": {
+          "email": "Correo electr\u00f3nico",
+          "password": "Contrase\u00f1a"
+        }
+      }
+    },
+    "error": {
+      "invalid_auth": "Correo o contrase\u00f1a inv\u00e1lidos.",
+      "cannot_connect": "No se puede conectar a aircontrolbase.com.",
+      "unknown": "Ocurri\u00f3 un error inesperado."
+    },
+    "abort": {
+      "already_configured": "Esta cuenta ya est\u00e1 configurada."
+    }
+  }
+}

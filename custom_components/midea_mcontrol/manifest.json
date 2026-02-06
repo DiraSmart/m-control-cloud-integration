@@ -1,0 +1,11 @@
+{
+  "domain": "midea_mcontrol",
+  "name": "Midea M-Control (Cloud)",
+  "codeowners": ["@enriquebeer21"],
+  "config_flow": true,
+  "documentation": "https://github.com/enriquebeer21/ha-midea-mcontrol",
+  "iot_class": "cloud_polling",
+  "issue_tracker": "https://github.com/enriquebeer21/ha-midea-mcontrol/issues",
+  "requirements": ["aiohttp>=3.8.0"],
+  "version": "1.0.0"
+}
