@@ -3,16 +3,18 @@
     "step": {
       "user": {
         "title": "Midea M-Control Cloud",
-        "description": "Enter your aircontrolbase.com credentials.",
+        "description": "Enter your aircontrolbase.com credentials. Optionally provide the local IP of your CCM21-i/CCM15 gateway for faster status updates (every 5s instead of 60s).",
         "data": {
           "email": "Email",
-          "password": "Password"
+          "password": "Password",
+          "host": "Local gateway IP (optional)"
         }
       }
     },
     "error": {
       "invalid_auth": "Invalid email or password.",
       "cannot_connect": "Cannot connect to aircontrolbase.com.",
+      "local_unreachable": "Cannot reach local gateway at the specified IP.",
       "unknown": "Unexpected error occurred."
     },
     "abort": {

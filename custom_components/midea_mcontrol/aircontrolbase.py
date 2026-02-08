@@ -1,9 +1,10 @@
-"""API client for aircontrolbase.com (Midea M-Control cloud)."""
+"""API client for aircontrolbase.com (Midea M-Control cloud) and local CCM21-i."""
 
 from __future__ import annotations
 
 import json
 import logging
+from dataclasses import dataclass
 from typing import Any
 
 import aiohttp
@@ -12,11 +13,53 @@ from .const import (
     BASE_URL,
     CONTROL_PATH,
     DETAILS_PATH,
+    LOCAL_FAN_AUTO,
+    LOCAL_FAN_HIGH,
+    LOCAL_FAN_LOW,
+    LOCAL_FAN_MEDIUM,
+    LOCAL_FAN_OFF,
+    LOCAL_MODE_AUTO,
+    LOCAL_MODE_COOL,
+    LOCAL_MODE_DRY,
+    LOCAL_MODE_FAN,
+    LOCAL_MODE_HEAT,
+    LOCAL_MODE_OFF,
+    LOCAL_STATUS_ENDPOINT,
     LOGIN_PATH,
+    MODE_AUTO,
+    MODE_COOL,
+    MODE_DRY,
+    MODE_FAN,
+    MODE_HEAT,
+    POWER_OFF,
+    POWER_ON,
     SESSION_EXPIRED_CODE,
+    WIND_AUTO,
+    WIND_HIGH,
+    WIND_LOW,
+    WIND_MID,
 )
 
 _LOGGER = logging.getLogger(__name__)
+
+# Map local integer modes to cloud string modes
+LOCAL_MODE_TO_CLOUD = {
+    LOCAL_MODE_COOL: MODE_COOL,
+    LOCAL_MODE_HEAT: MODE_HEAT,
+    LOCAL_MODE_DRY: MODE_DRY,
+    LOCAL_MODE_FAN: MODE_FAN,
+    LOCAL_MODE_OFF: None,  # Off is represented by power="n"
+    LOCAL_MODE_AUTO: MODE_AUTO,
+}
+
+# Map local integer fan to cloud string fan
+LOCAL_FAN_TO_CLOUD = {
+    LOCAL_FAN_AUTO: WIND_AUTO,
+    LOCAL_FAN_LOW: WIND_LOW,
+    LOCAL_FAN_MEDIUM: WIND_MID,
+    LOCAL_FAN_HIGH: WIND_HIGH,
+    LOCAL_FAN_OFF: WIND_AUTO,
+}
 
 
 class AirControlBaseApiError(Exception):
@@ -25,6 +68,154 @@ class AirControlBaseApiError(Exception):
 
 class AuthenticationError(AirControlBaseApiError):
     """Authentication failed."""
+
+
+@dataclass
+class LocalDeviceState:
+    """Parsed state of one AC unit from local CCM21-i hex data."""
+
+    addr: int
+    ac_mode: int
+    fan_mode: int
+    temperature: int  # current room temp
+    temperature_setpoint: int
+    is_swing_on: bool
+    error_code: int
+    is_on: bool
+
+    def to_cloud_format(self) -> dict[str, Any]:
+        """Convert local state to cloud-compatible dict for merging."""
+        mode = LOCAL_MODE_TO_CLOUD.get(self.ac_mode, MODE_AUTO)
+        wind = LOCAL_FAN_TO_CLOUD.get(self.fan_mode, WIND_AUTO)
+        power = POWER_OFF if not self.is_on else POWER_ON
+
+        return {
+            "power": power,
+            "mode": mode or MODE_AUTO,
+            "setTemp": str(self.temperature_setpoint),
+            "wind": wind,
+            "factTemp": str(self.temperature),
+            "swing": "1" if self.is_swing_on else "0",
+        }
+
+
+def parse_hex_status(addr: int, hex_data: str) -> LocalDeviceState | None:
+    """Parse 7-byte hex string from CCM21-i into a LocalDeviceState."""
+    if hex_data == "-" or len(hex_data) < 14:
+        return None
+
+    hex_clean = hex_data.strip(",").strip()
+    try:
+        raw = bytes.fromhex(hex_clean)
+    except ValueError:
+        _LOGGER.warning("Invalid hex data for addr %d: %s", addr, hex_data)
+        return None
+
+    if len(raw) < 7:
+        return None
+
+    # Byte 3: ac_mode and fan_mode
+    byte3 = raw[3]
+    ac_mode = (byte3 >> 2) & 7
+    fan_mode = (byte3 >> 5) & 7
+    is_on = (byte3 & 1) != 0 or ac_mode != LOCAL_MODE_OFF
+
+    # Byte 4: swing and setpoint
+    byte4 = raw[4]
+    is_swing_on = (byte4 >> 1) & 1 != 0
+    temperature_setpoint = (byte4 >> 3) & 0x1F
+
+    # Byte 2: error code
+    byte2 = raw[2]
+    error_code = (byte2 >> 2) & 0x3F
+
+    # Byte 6: current temperature (signed)
+    byte6 = raw[6]
+    temperature = byte6 if byte6 < 128 else byte6 - 256
+
+    # Determine power state: mode 4 = OFF
+    is_on = ac_mode != LOCAL_MODE_OFF
+
+    return LocalDeviceState(
+        addr=addr,
+        ac_mode=ac_mode,
+        fan_mode=fan_mode,
+        temperature=temperature,
+        temperature_setpoint=temperature_setpoint,
+        is_swing_on=is_swing_on,
+        error_code=error_code,
+        is_on=is_on,
+    )
+
+
+class LocalApi:
+    """Client for the local CCM21-i HTTP API."""
+
+    def __init__(
+        self,
+        host: str,
+        session: aiohttp.ClientSession | None = None,
+    ) -> None:
+        """Initialize the local API client."""
+        self._host = host
+        self._session = session
+        self._owns_session = session is None
+
+    async def _ensure_session(self) -> aiohttp.ClientSession:
+        """Ensure we have an aiohttp session."""
+        if self._session is None or self._session.closed:
+            timeout = aiohttp.ClientTimeout(total=10)
+            self._session = aiohttp.ClientSession(timeout=timeout)
+            self._owns_session = True
+        return self._session
+
+    async def close(self) -> None:
+        """Close the session if we own it."""
+        if self._owns_session and self._session and not self._session.closed:
+            await self._session.close()
+
+    async def get_status(self) -> list[LocalDeviceState]:
+        """Fetch all AC statuses from the local CCM21-i device."""
+        session = await self._ensure_session()
+        url = f"http://{self._host}{LOCAL_STATUS_ENDPOINT}"
+
+        try:
+            async with session.post(
+                url,
+                data={"_web_cmd": "get_mbdata_all", "_ajax": "1"},
+                timeout=aiohttp.ClientTimeout(total=10),
+            ) as resp:
+                if resp.status != 200:
+                    _LOGGER.warning("Local API returned HTTP %d", resp.status)
+                    return []
+
+                data = await resp.json(content_type=None)
+
+        except (aiohttp.ClientError, TimeoutError) as err:
+            _LOGGER.warning("Local API error: %s", err)
+            return []
+
+        devices: list[LocalDeviceState] = []
+        for entry in data:
+            addr = entry.get("addr")
+            hex_data = entry.get("Data", "-")
+            if addr is None or hex_data == "-":
+                continue
+
+            state = parse_hex_status(addr, hex_data)
+            if state is not None:
+                devices.append(state)
+
+        _LOGGER.debug("Local poll found %d active AC units", len(devices))
+        return devices
+
+    async def test_connection(self) -> bool:
+        """Test if the local device is reachable."""
+        try:
+            devices = await self.get_status()
+            return True  # If we got a response at all, it's reachable
+        except Exception:
+            return False
 
 
 class AirControlBaseApi:

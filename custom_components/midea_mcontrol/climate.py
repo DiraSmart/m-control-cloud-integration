@@ -191,12 +191,14 @@ class MideaMControlClimate(CoordinatorEntity[MideaMControlCoordinator], ClimateE
         return SWING_OFF
 
     async def _send_control(self, **overrides: Any) -> None:
-        """Build a device state dict and send it to the API."""
-        # Start from the latest known device data
-        state = copy.deepcopy(self._device_data)
+        """Build a device state dict and send it via cloud API."""
+        # Use cached cloud data as base (has all fields the API expects)
+        state = self.coordinator.get_cloud_device_data(self._device_id)
+        if not state:
+            state = copy.deepcopy(self._device_data)
         state.update(overrides)
 
-        await self.coordinator.api.control_device(state)
+        await self.coordinator.cloud_api.control_device(state)
 
         # Optimistically update local state
         if self.coordinator.data:
@@ -204,7 +206,7 @@ class MideaMControlClimate(CoordinatorEntity[MideaMControlCoordinator], ClimateE
         self._last_device_data = state
         self.async_write_ha_state()
 
-        # Schedule a refresh after a short delay to get confirmed state
+        # Schedule a refresh to get confirmed state
         await self.coordinator.async_request_refresh()
 
     async def async_set_hvac_mode(self, hvac_mode: HVACMode) -> None:

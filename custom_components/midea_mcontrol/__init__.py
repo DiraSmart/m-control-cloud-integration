@@ -9,8 +9,8 @@ from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
-from .aircontrolbase import AirControlBaseApi
-from .const import CONF_EMAIL, CONF_PASSWORD, DOMAIN
+from .aircontrolbase import AirControlBaseApi, LocalApi
+from .const import CONF_EMAIL, CONF_HOST, CONF_PASSWORD, DOMAIN
 from .coordinator import MideaMControlCoordinator
 
 _LOGGER = logging.getLogger(__name__)
@@ -22,19 +22,27 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Midea M-Control from a config entry."""
     session = async_get_clientsession(hass)
 
-    api = AirControlBaseApi(
+    cloud_api = AirControlBaseApi(
         email=entry.data[CONF_EMAIL],
         password=entry.data[CONF_PASSWORD],
         session=session,
     )
 
-    # Login first
-    await api.login()
+    # Login to cloud
+    await cloud_api.login()
 
-    coordinator = MideaMControlCoordinator(hass, api)
+    # Set up local API if host is configured
+    local_api: LocalApi | None = None
+    host = entry.data.get(CONF_HOST)
+    if host:
+        local_api = LocalApi(host=host, session=session)
+        _LOGGER.info("Local CCM21-i polling enabled at %s", host)
 
-    # Fetch initial data
-    await coordinator.async_config_entry_first_refresh()
+    coordinator = MideaMControlCoordinator(hass, cloud_api, local_api)
+
+    # Initial cloud fetch (discovers devices and builds addr mapping)
+    initial_data = await coordinator.async_initial_cloud_fetch()
+    coordinator.async_set_updated_data(initial_data)
 
     hass.data.setdefault(DOMAIN, {})
     hass.data[DOMAIN][entry.entry_id] = coordinator
