@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="custom_components/midea_mcontrol/logo.png" alt="Midea M-Control" width="150">
+</p>
+
 # Midea M-Control (Cloud + Local) - Home Assistant Integration
 
 [![hacs_badge](https://img.shields.io/badge/HACS-Custom-41BDF5.svg)](https://github.com/hacs/integration)
