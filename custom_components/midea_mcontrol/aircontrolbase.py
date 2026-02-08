@@ -174,39 +174,49 @@ class LocalApi:
         if self._owns_session and self._session and not self._session.closed:
             await self._session.close()
 
-    async def get_status(self) -> list[LocalDeviceState]:
-        """Fetch all AC statuses from the local CCM21-i device."""
+    async def _fetch_one_page(self) -> list[dict[str, Any]]:
+        """Fetch one page of data from the local endpoint."""
         session = await self._ensure_session()
         url = f"http://{self._host}{LOCAL_STATUS_ENDPOINT}"
 
+        async with session.post(
+            url,
+            data={"_web_cmd": "get_mbdata_all", "_ajax": "1"},
+            timeout=aiohttp.ClientTimeout(total=10),
+        ) as resp:
+            if resp.status != 200:
+                _LOGGER.warning("Local API returned HTTP %d", resp.status)
+                return []
+            return await resp.json(content_type=None)
+
+    async def get_status(self) -> list[LocalDeviceState]:
+        """Fetch all AC statuses from the local CCM21-i device.
+
+        The CCM21-i alternates between returning addresses 0-31 and 32-63
+        on each call, so we make two consecutive requests to get all 64.
+        """
         try:
-            async with session.post(
-                url,
-                data={"_web_cmd": "get_mbdata_all", "_ajax": "1"},
-                timeout=aiohttp.ClientTimeout(total=10),
-            ) as resp:
-                if resp.status != 200:
-                    _LOGGER.warning("Local API returned HTTP %d", resp.status)
-                    return []
-
-                data = await resp.json(content_type=None)
-
+            page1 = await self._fetch_one_page()
+            page2 = await self._fetch_one_page()
         except (aiohttp.ClientError, TimeoutError) as err:
             _LOGGER.warning("Local API error: %s", err)
             return []
 
-        devices: list[LocalDeviceState] = []
-        for entry in data:
+        # Merge both pages, dedup by addr
+        all_entries: dict[int, str] = {}
+        for entry in page1 + page2:
             addr = entry.get("addr")
             hex_data = entry.get("Data", "-")
-            if addr is None or hex_data == "-":
-                continue
+            if addr is not None and hex_data != "-":
+                all_entries[addr] = hex_data
 
+        devices: list[LocalDeviceState] = []
+        for addr, hex_data in sorted(all_entries.items()):
             state = parse_hex_status(addr, hex_data)
             if state is not None:
                 devices.append(state)
 
-        _LOGGER.debug("Local poll found %d active AC units", len(devices))
+        _LOGGER.debug("Local poll found %d active AC units across 0-63", len(devices))
         return devices
 
     async def test_connection(self) -> bool:
