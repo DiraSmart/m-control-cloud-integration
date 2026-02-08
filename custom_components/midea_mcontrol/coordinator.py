@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import timedelta
 import logging
+import time
 from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
@@ -19,6 +20,10 @@ from .aircontrolbase import (
 from .const import DEFAULT_CLOUD_SCAN_INTERVAL, DEFAULT_LOCAL_SCAN_INTERVAL, DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
+
+# After sending a control command, ignore status polls for this many seconds
+# to prevent the old state from overwriting the optimistic update.
+COMMAND_COOLDOWN_SECONDS = 15
 
 
 class MideaMControlCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any]]]):
@@ -58,11 +63,28 @@ class MideaMControlCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any]]])
         self._id_to_addr: dict[str, int] = {}
         # Store cloud device data for control operations (preserves all fields)
         self._cloud_device_cache: dict[str, dict[str, Any]] = {}
+        # Track last command time to avoid overwriting optimistic state
+        self._last_command_time: float = 0
 
     @property
     def has_local(self) -> bool:
         """Return True if local polling is configured."""
         return self._local_api is not None
+
+    def notify_command_sent(self) -> None:
+        """Record that a control command was just sent.
+
+        This starts a cooldown period during which polls are skipped
+        so the optimistic state is preserved.
+        """
+        self._last_command_time = time.monotonic()
+
+    def _in_cooldown(self) -> bool:
+        """Return True if we're in the post-command cooldown period."""
+        if self._last_command_time == 0:
+            return False
+        elapsed = time.monotonic() - self._last_command_time
+        return elapsed < COMMAND_COOLDOWN_SECONDS
 
     async def async_initial_cloud_fetch(self) -> dict[str, dict[str, Any]]:
         """Fetch initial cloud data and build addr mapping.
@@ -150,7 +172,20 @@ class MideaMControlCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any]]])
         )
 
     async def _async_update_data(self) -> dict[str, dict[str, Any]]:
-        """Fetch data - locally if available, cloud as fallback."""
+        """Fetch data - locally if available, cloud as fallback.
+
+        Skips polling during cooldown after a command to preserve
+        the optimistic state shown in the UI.
+        """
+        if self._in_cooldown():
+            _LOGGER.debug(
+                "Skipping poll (%.0fs remaining in cooldown)",
+                COMMAND_COOLDOWN_SECONDS
+                - (time.monotonic() - self._last_command_time),
+            )
+            # Return current data unchanged
+            return self.data or {}
+
         if self._local_api and self._id_to_addr:
             return await self._update_from_local()
         return await self._update_from_cloud()

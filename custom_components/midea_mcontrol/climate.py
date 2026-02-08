@@ -198,16 +198,17 @@ class MideaMControlClimate(CoordinatorEntity[MideaMControlCoordinator], ClimateE
             state = copy.deepcopy(self._device_data)
         state.update(overrides)
 
+        # Start cooldown BEFORE sending so polls don't overwrite
+        self.coordinator.notify_command_sent()
+
         await self.coordinator.cloud_api.control_device(state)
 
-        # Optimistically update local state
+        # Optimistically update local state - this stays visible
+        # for 15 seconds until the cooldown expires and real data is polled
         if self.coordinator.data:
             self.coordinator.data[self._device_id] = state
         self._last_device_data = state
         self.async_write_ha_state()
-
-        # Schedule a refresh to get confirmed state
-        await self.coordinator.async_request_refresh()
 
     async def async_set_hvac_mode(self, hvac_mode: HVACMode) -> None:
         """Set the HVAC mode."""
