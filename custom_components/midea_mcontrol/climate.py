@@ -22,6 +22,7 @@ from homeassistant.components.climate.const import (
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import ATTR_TEMPERATURE, UnitOfTemperature
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
@@ -121,7 +122,15 @@ class MideaMControlClimate(CoordinatorEntity[MideaMControlCoordinator], ClimateE
         super().__init__(coordinator)
         self._device_id = device_id
         self._attr_unique_id = f"{DOMAIN}_{device_id}"
-        self._attr_name = device_data.get("name", f"AC {device_id}")
+        self._attr_name = "Climate"
+        device_name = device_data.get("name", f"AC {device_id}")
+        self._attr_device_info = DeviceInfo(
+            identifiers={(DOMAIN, device_id)},
+            name=device_name,
+            manufacturer="Midea",
+            model="VRF AC Unit",
+            via_device=(DOMAIN, "ccm21i"),
+        )
         self._last_device_data: dict[str, Any] = device_data
 
     @property
