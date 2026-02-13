@@ -50,7 +50,7 @@ _LOGGER = logging.getLogger(__name__)
 CLOUD_TO_HVAC_MODE: dict[str, HVACMode] = {
     MODE_COOL: HVACMode.COOL,
     MODE_HEAT: HVACMode.HEAT,
-    MODE_AUTO: HVACMode.AUTO,
+    MODE_AUTO: HVACMode.HEAT_COOL,
     MODE_FAN: HVACMode.FAN_ONLY,
     MODE_DRY: HVACMode.DRY,
 }
@@ -105,7 +105,7 @@ class MideaMControlClimate(CoordinatorEntity[MideaMControlCoordinator], ClimateE
         HVACMode.OFF,
         HVACMode.COOL,
         HVACMode.HEAT,
-        HVACMode.AUTO,
+        HVACMode.HEAT_COOL,
         HVACMode.DRY,
         HVACMode.FAN_ONLY,
     ]
@@ -156,7 +156,7 @@ class MideaMControlClimate(CoordinatorEntity[MideaMControlCoordinator], ClimateE
             return HVACMode.OFF
 
         cloud_mode = data.get("mode", MODE_AUTO)
-        return CLOUD_TO_HVAC_MODE.get(cloud_mode, HVACMode.AUTO)
+        return CLOUD_TO_HVAC_MODE.get(cloud_mode, HVACMode.HEAT_COOL)
 
     @property
     def current_temperature(self) -> float | None:
