@@ -25,12 +25,22 @@ _LOGGER = logging.getLogger(__name__)
 # to prevent the old state from overwriting the optimistic update.
 COMMAND_COOLDOWN_SECONDS = 15
 
+# How often to refresh cloud data for mode/fan/power settings (seconds).
+# The local hex reports the *running* mode (e.g. cool while in auto), so we
+# rely on the cloud API for the *configured* mode/fan/power/swing.
+CLOUD_REFRESH_INTERVAL = 60
+
 
 class MideaMControlCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any]]]):
-    """Coordinator that polls locally for fast status and uses cloud for control.
+    """Coordinator that polls locally for fast temperature and uses cloud for settings.
 
-    Data is a dict keyed by device ID, with each value being the full device dict
-    in cloud-compatible format.
+    Hybrid strategy:
+      - Local poll every 5 s  → factTemp (real-time room temperature sensor)
+      - Cloud poll every 60 s → mode, wind, power, setTemp, swing (configured state)
+
+    The CCM21-i hex data reports the *running* mode/fan (e.g. "cool" when in
+    auto mode), not the *configured* mode.  The cloud API always returns the
+    configured values, so we use it as the source of truth for settings.
     """
 
     config_entry: ConfigEntry
@@ -65,6 +75,8 @@ class MideaMControlCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any]]])
         self._cloud_device_cache: dict[str, dict[str, Any]] = {}
         # Track last command time to avoid overwriting optimistic state
         self._last_command_time: float = 0
+        # Track last cloud refresh time
+        self._last_cloud_refresh: float = 0
 
     @property
     def has_local(self) -> bool:
@@ -172,7 +184,7 @@ class MideaMControlCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any]]])
         )
 
     async def _async_update_data(self) -> dict[str, dict[str, Any]]:
-        """Fetch data - locally if available, cloud as fallback.
+        """Fetch data - local for temperature, cloud for settings.
 
         Skips polling during cooldown after a command to preserve
         the optimistic state shown in the UI.
@@ -183,15 +195,45 @@ class MideaMControlCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any]]])
                 COMMAND_COOLDOWN_SECONDS
                 - (time.monotonic() - self._last_command_time),
             )
-            # Return current data unchanged
             return self.data or {}
 
         if self._local_api and self._id_to_addr:
             return await self._update_from_local()
         return await self._update_from_cloud()
 
+    async def _refresh_cloud_settings(self) -> None:
+        """Refresh cloud data for mode/fan/power/settings.
+
+        Called periodically (every 60 s) to get the *configured* state
+        which the local hex data does not reliably provide.
+        """
+        try:
+            devices = await self.cloud_api.get_devices()
+        except AirControlBaseApiError as err:
+            _LOGGER.debug("Cloud settings refresh failed: %s", err)
+            return
+
+        for device in devices:
+            device_id = device.get("id")
+            if device_id:
+                self._cloud_device_cache[device_id] = device
+
+        self._last_cloud_refresh = time.monotonic()
+        _LOGGER.debug("Cloud settings refreshed for %d devices", len(devices))
+
     async def _update_from_local(self) -> dict[str, dict[str, Any]]:
-        """Fast update using local CCM21-i API."""
+        """Hybrid update: local for temperature, cloud for settings.
+
+        The CCM21-i hex data reports the *running* mode/fan (e.g. cool
+        while in auto), not the configured mode.  So we only trust the
+        local data for factTemp (real-time sensor reading) and use the
+        cloud cache for mode, wind, power, setTemp, and swing.
+        """
+        # Periodically refresh cloud data for settings
+        now = time.monotonic()
+        if now - self._last_cloud_refresh >= CLOUD_REFRESH_INTERVAL:
+            await self._refresh_cloud_settings()
+
         try:
             local_states = await self._local_api.get_status()
         except Exception as err:
@@ -206,14 +248,14 @@ class MideaMControlCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any]]])
         result: dict[str, dict[str, Any]] = {}
 
         for device_id, addr in self._id_to_addr.items():
-            # Start from cached cloud data (has id, name, lock values, etc.)
+            # Start from cached cloud data (source of truth for settings)
             cached = self._cloud_device_cache.get(device_id, {})
             device_data = dict(cached)
 
-            # Overlay local status if available
+            # Only overlay real-time temperature from local data
             local_state = addr_to_state.get(addr)
             if local_state:
-                device_data.update(local_state.to_cloud_format())
+                device_data["factTemp"] = str(local_state.temperature)
 
             result[device_id] = device_data
 
