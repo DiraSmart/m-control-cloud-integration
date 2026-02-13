@@ -12,7 +12,6 @@ from homeassistant.components.climate import (
     HVACMode,
 )
 from homeassistant.components.climate.const import (
-    FAN_AUTO,
     FAN_HIGH,
     FAN_LOW,
     FAN_MEDIUM,
@@ -30,14 +29,9 @@ from .const import (
     DOMAIN,
     MAX_TEMP,
     MIN_TEMP,
-    MODE_AUTO,
     MODE_COOL,
-    MODE_DRY,
-    MODE_FAN,
-    MODE_HEAT,
     POWER_OFF,
     POWER_ON,
-    WIND_AUTO,
     WIND_HIGH,
     WIND_LOW,
     WIND_MID,
@@ -46,21 +40,8 @@ from .coordinator import MideaMControlCoordinator
 
 _LOGGER = logging.getLogger(__name__)
 
-# Mapping from cloud API mode strings to HA HVACMode
-CLOUD_TO_HVAC_MODE: dict[str, HVACMode] = {
-    MODE_COOL: HVACMode.COOL,
-    MODE_HEAT: HVACMode.HEAT,
-    MODE_AUTO: HVACMode.HEAT_COOL,
-    MODE_FAN: HVACMode.FAN_ONLY,
-    MODE_DRY: HVACMode.DRY,
-}
-
-# Reverse mapping
-HVAC_MODE_TO_CLOUD: dict[HVACMode, str] = {v: k for k, v in CLOUD_TO_HVAC_MODE.items()}
-
 # Mapping from cloud API wind strings to HA fan modes
 CLOUD_TO_FAN_MODE: dict[str, str] = {
-    WIND_AUTO: FAN_AUTO,
     WIND_LOW: FAN_LOW,
     WIND_MID: FAN_MEDIUM,
     WIND_HIGH: FAN_HIGH,
@@ -104,12 +85,8 @@ class MideaMControlClimate(CoordinatorEntity[MideaMControlCoordinator], ClimateE
     _attr_hvac_modes = [
         HVACMode.OFF,
         HVACMode.COOL,
-        HVACMode.HEAT,
-        HVACMode.HEAT_COOL,
-        HVACMode.DRY,
-        HVACMode.FAN_ONLY,
     ]
-    _attr_fan_modes = [FAN_AUTO, FAN_LOW, FAN_MEDIUM, FAN_HIGH]
+    _attr_fan_modes = [FAN_LOW, FAN_MEDIUM, FAN_HIGH]
     _attr_swing_modes = [SWING_ON, SWING_OFF]
 
     def __init__(
@@ -154,9 +131,7 @@ class MideaMControlClimate(CoordinatorEntity[MideaMControlCoordinator], ClimateE
         power = data.get("power", POWER_OFF)
         if power != POWER_ON:
             return HVACMode.OFF
-
-        cloud_mode = data.get("mode", MODE_AUTO)
-        return CLOUD_TO_HVAC_MODE.get(cloud_mode, HVACMode.HEAT_COOL)
+        return HVACMode.COOL
 
     @property
     def current_temperature(self) -> float | None:
@@ -186,8 +161,8 @@ class MideaMControlClimate(CoordinatorEntity[MideaMControlCoordinator], ClimateE
     def fan_mode(self) -> str | None:
         """Return the current fan mode."""
         data = self._device_data
-        cloud_wind = data.get("wind", WIND_AUTO)
-        return CLOUD_TO_FAN_MODE.get(cloud_wind, FAN_AUTO)
+        cloud_wind = data.get("wind", WIND_LOW)
+        return CLOUD_TO_FAN_MODE.get(cloud_wind, FAN_LOW)
 
     @property
     def swing_mode(self) -> str | None:
@@ -207,14 +182,6 @@ class MideaMControlClimate(CoordinatorEntity[MideaMControlCoordinator], ClimateE
             state = copy.deepcopy(self._device_data)
         state.update(overrides)
 
-        # Persist mode/wind overrides so polls never overwrite them.
-        # The APIs only return the running mode (e.g. "cool" while in auto).
-        self.coordinator.set_ha_override(self._device_id, **overrides)
-
-        # Clear overrides when turning off (mode resets on next power-on)
-        if overrides.get("power") == POWER_OFF:
-            self.coordinator.clear_ha_overrides(self._device_id)
-
         # Start cooldown BEFORE sending so polls don't overwrite
         self.coordinator.notify_command_sent()
 
@@ -232,8 +199,7 @@ class MideaMControlClimate(CoordinatorEntity[MideaMControlCoordinator], ClimateE
         if hvac_mode == HVACMode.OFF:
             await self._send_control(power=POWER_OFF)
         else:
-            cloud_mode = HVAC_MODE_TO_CLOUD.get(hvac_mode, MODE_AUTO)
-            await self._send_control(power=POWER_ON, mode=cloud_mode)
+            await self._send_control(power=POWER_ON, mode=MODE_COOL)
 
     async def async_set_temperature(self, **kwargs: Any) -> None:
         """Set the target temperature."""
@@ -250,13 +216,13 @@ class MideaMControlClimate(CoordinatorEntity[MideaMControlCoordinator], ClimateE
                 overrides["power"] = POWER_OFF
             else:
                 overrides["power"] = POWER_ON
-                overrides["mode"] = HVAC_MODE_TO_CLOUD.get(hvac_mode, MODE_AUTO)
+                overrides["mode"] = MODE_COOL
 
         await self._send_control(**overrides)
 
     async def async_set_fan_mode(self, fan_mode: str) -> None:
         """Set the fan mode."""
-        cloud_wind = FAN_MODE_TO_CLOUD.get(fan_mode, WIND_AUTO)
+        cloud_wind = FAN_MODE_TO_CLOUD.get(fan_mode, WIND_LOW)
         await self._send_control(wind=cloud_wind)
 
     async def async_set_swing_mode(self, swing_mode: str) -> None:

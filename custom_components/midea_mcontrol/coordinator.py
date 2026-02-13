@@ -29,13 +29,9 @@ COMMAND_COOLDOWN_SECONDS = 15
 class MideaMControlCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any]]]):
     """Coordinator that polls locally for fast status and uses cloud for control.
 
-    The CCM21-i hex data and the cloud API both report the *running* mode/fan
-    (e.g. "cool" when in auto, "low" when fan is auto).  Neither source
-    provides the *configured* mode or fan.
-
-    To work around this, we persist mode/wind values that HA commands set
-    and overlay them on every poll so they are never overwritten by the
-    running-mode data from the APIs.
+    These AC units only support cool mode with low/mid/high fan.
+    The local CCM21-i provides fast 5s polling for temperatures and status,
+    while the cloud API is used for sending control commands.
     """
 
     config_entry: ConfigEntry
@@ -70,10 +66,6 @@ class MideaMControlCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any]]])
         self._cloud_device_cache: dict[str, dict[str, Any]] = {}
         # Track last command time to avoid overwriting optimistic state
         self._last_command_time: float = 0
-        # HA-commanded mode/wind overrides per device.
-        # The APIs only report running mode (e.g. "cool" while in auto),
-        # so we persist the configured values from HA commands here.
-        self._ha_overrides: dict[str, dict[str, Any]] = {}
 
     @property
     def has_local(self) -> bool:
@@ -87,26 +79,6 @@ class MideaMControlCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any]]])
         so the optimistic state is preserved.
         """
         self._last_command_time = time.monotonic()
-
-    def set_ha_override(self, device_id: str, **fields: Any) -> None:
-        """Persist HA-commanded mode/wind so polls don't overwrite them.
-
-        Only 'mode' and 'wind' are stored as overrides because these are the
-        fields where the API returns the running state instead of the
-        configured state.
-        """
-        if device_id not in self._ha_overrides:
-            self._ha_overrides[device_id] = {}
-        for key in ("mode", "wind"):
-            if key in fields:
-                self._ha_overrides[device_id][key] = fields[key]
-                _LOGGER.debug(
-                    "Saved HA override for %s: %s=%s", device_id, key, fields[key]
-                )
-
-    def clear_ha_overrides(self, device_id: str) -> None:
-        """Clear overrides for a device (e.g. when turned off)."""
-        self._ha_overrides.pop(device_id, None)
 
     def _in_cooldown(self) -> bool:
         """Return True if we're in the post-command cooldown period."""
@@ -219,16 +191,6 @@ class MideaMControlCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any]]])
             return await self._update_from_local()
         return await self._update_from_cloud()
 
-    def _apply_ha_overrides(self, result: dict[str, dict[str, Any]]) -> None:
-        """Apply HA-commanded mode/wind overrides to poll results.
-
-        The APIs only return the running mode/fan, so we overlay the
-        configured values that HA has set.
-        """
-        for device_id, overrides in self._ha_overrides.items():
-            if device_id in result and overrides:
-                result[device_id].update(overrides)
-
     async def _update_from_local(self) -> dict[str, dict[str, Any]]:
         """Fast update using local CCM21-i API."""
         try:
@@ -256,9 +218,6 @@ class MideaMControlCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any]]])
 
             result[device_id] = device_data
 
-        # Apply HA overrides for mode/wind (APIs report running, not configured)
-        self._apply_ha_overrides(result)
-
         return result
 
     async def _update_from_cloud(self) -> dict[str, dict[str, Any]]:
@@ -274,9 +233,6 @@ class MideaMControlCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any]]])
                 device_id = device["id"]
                 result[device_id] = device
                 self._cloud_device_cache[device_id] = device
-
-        # Apply HA overrides for mode/wind
-        self._apply_ha_overrides(result)
 
         return result
 
