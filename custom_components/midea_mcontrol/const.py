@@ -1,6 +1,6 @@
 """Constants for the Midea M-Control integration."""
 
-VERSION = "2.2.0"
+VERSION = "2.2.1"
 DOMAIN = "midea_mcontrol"
 
 CONF_EMAIL = "email"
@@ -19,7 +19,7 @@ DEFAULT_LOCAL_SCAN_INTERVAL = 5   # seconds (local fast polling)
 
 LOCAL_STATUS_ENDPOINT = "/get_mbdata_all.jsn"
 
-MIN_TEMP = 16
+MIN_TEMP = 14
 MAX_TEMP = 30
 
 # Cloud API mode values
