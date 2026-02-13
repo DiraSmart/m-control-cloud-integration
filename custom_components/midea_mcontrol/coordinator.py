@@ -25,22 +25,17 @@ _LOGGER = logging.getLogger(__name__)
 # to prevent the old state from overwriting the optimistic update.
 COMMAND_COOLDOWN_SECONDS = 15
 
-# How often to refresh cloud data for mode/fan/power settings (seconds).
-# The local hex reports the *running* mode (e.g. cool while in auto), so we
-# rely on the cloud API for the *configured* mode/fan/power/swing.
-CLOUD_REFRESH_INTERVAL = 60
-
 
 class MideaMControlCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any]]]):
-    """Coordinator that polls locally for fast temperature and uses cloud for settings.
+    """Coordinator that polls locally for fast status and uses cloud for control.
 
-    Hybrid strategy:
-      - Local poll every 5 s  → factTemp (real-time room temperature sensor)
-      - Cloud poll every 60 s → mode, wind, power, setTemp, swing (configured state)
+    The CCM21-i hex data and the cloud API both report the *running* mode/fan
+    (e.g. "cool" when in auto, "low" when fan is auto).  Neither source
+    provides the *configured* mode or fan.
 
-    The CCM21-i hex data reports the *running* mode/fan (e.g. "cool" when in
-    auto mode), not the *configured* mode.  The cloud API always returns the
-    configured values, so we use it as the source of truth for settings.
+    To work around this, we persist mode/wind values that HA commands set
+    and overlay them on every poll so they are never overwritten by the
+    running-mode data from the APIs.
     """
 
     config_entry: ConfigEntry
@@ -75,8 +70,10 @@ class MideaMControlCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any]]])
         self._cloud_device_cache: dict[str, dict[str, Any]] = {}
         # Track last command time to avoid overwriting optimistic state
         self._last_command_time: float = 0
-        # Track last cloud refresh time
-        self._last_cloud_refresh: float = 0
+        # HA-commanded mode/wind overrides per device.
+        # The APIs only report running mode (e.g. "cool" while in auto),
+        # so we persist the configured values from HA commands here.
+        self._ha_overrides: dict[str, dict[str, Any]] = {}
 
     @property
     def has_local(self) -> bool:
@@ -90,6 +87,26 @@ class MideaMControlCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any]]])
         so the optimistic state is preserved.
         """
         self._last_command_time = time.monotonic()
+
+    def set_ha_override(self, device_id: str, **fields: Any) -> None:
+        """Persist HA-commanded mode/wind so polls don't overwrite them.
+
+        Only 'mode' and 'wind' are stored as overrides because these are the
+        fields where the API returns the running state instead of the
+        configured state.
+        """
+        if device_id not in self._ha_overrides:
+            self._ha_overrides[device_id] = {}
+        for key in ("mode", "wind"):
+            if key in fields:
+                self._ha_overrides[device_id][key] = fields[key]
+                _LOGGER.debug(
+                    "Saved HA override for %s: %s=%s", device_id, key, fields[key]
+                )
+
+    def clear_ha_overrides(self, device_id: str) -> None:
+        """Clear overrides for a device (e.g. when turned off)."""
+        self._ha_overrides.pop(device_id, None)
 
     def _in_cooldown(self) -> bool:
         """Return True if we're in the post-command cooldown period."""
@@ -184,7 +201,7 @@ class MideaMControlCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any]]])
         )
 
     async def _async_update_data(self) -> dict[str, dict[str, Any]]:
-        """Fetch data - local for temperature, cloud for settings.
+        """Fetch data - locally if available, cloud as fallback.
 
         Skips polling during cooldown after a command to preserve
         the optimistic state shown in the UI.
@@ -195,45 +212,25 @@ class MideaMControlCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any]]])
                 COMMAND_COOLDOWN_SECONDS
                 - (time.monotonic() - self._last_command_time),
             )
+            # Return current data unchanged
             return self.data or {}
 
         if self._local_api and self._id_to_addr:
             return await self._update_from_local()
         return await self._update_from_cloud()
 
-    async def _refresh_cloud_settings(self) -> None:
-        """Refresh cloud data for mode/fan/power/settings.
+    def _apply_ha_overrides(self, result: dict[str, dict[str, Any]]) -> None:
+        """Apply HA-commanded mode/wind overrides to poll results.
 
-        Called periodically (every 60 s) to get the *configured* state
-        which the local hex data does not reliably provide.
+        The APIs only return the running mode/fan, so we overlay the
+        configured values that HA has set.
         """
-        try:
-            devices = await self.cloud_api.get_devices()
-        except AirControlBaseApiError as err:
-            _LOGGER.debug("Cloud settings refresh failed: %s", err)
-            return
-
-        for device in devices:
-            device_id = device.get("id")
-            if device_id:
-                self._cloud_device_cache[device_id] = device
-
-        self._last_cloud_refresh = time.monotonic()
-        _LOGGER.debug("Cloud settings refreshed for %d devices", len(devices))
+        for device_id, overrides in self._ha_overrides.items():
+            if device_id in result and overrides:
+                result[device_id].update(overrides)
 
     async def _update_from_local(self) -> dict[str, dict[str, Any]]:
-        """Hybrid update: local for temperature, cloud for settings.
-
-        The CCM21-i hex data reports the *running* mode/fan (e.g. cool
-        while in auto), not the configured mode.  So we only trust the
-        local data for factTemp (real-time sensor reading) and use the
-        cloud cache for mode, wind, power, setTemp, and swing.
-        """
-        # Periodically refresh cloud data for settings
-        now = time.monotonic()
-        if now - self._last_cloud_refresh >= CLOUD_REFRESH_INTERVAL:
-            await self._refresh_cloud_settings()
-
+        """Fast update using local CCM21-i API."""
         try:
             local_states = await self._local_api.get_status()
         except Exception as err:
@@ -248,16 +245,19 @@ class MideaMControlCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any]]])
         result: dict[str, dict[str, Any]] = {}
 
         for device_id, addr in self._id_to_addr.items():
-            # Start from cached cloud data (source of truth for settings)
+            # Start from cached cloud data (has id, name, lock values, etc.)
             cached = self._cloud_device_cache.get(device_id, {})
             device_data = dict(cached)
 
-            # Only overlay real-time temperature from local data
+            # Overlay local status if available
             local_state = addr_to_state.get(addr)
             if local_state:
-                device_data["factTemp"] = str(local_state.temperature)
+                device_data.update(local_state.to_cloud_format())
 
             result[device_id] = device_data
+
+        # Apply HA overrides for mode/wind (APIs report running, not configured)
+        self._apply_ha_overrides(result)
 
         return result
 
@@ -274,6 +274,9 @@ class MideaMControlCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any]]])
                 device_id = device["id"]
                 result[device_id] = device
                 self._cloud_device_cache[device_id] = device
+
+        # Apply HA overrides for mode/wind
+        self._apply_ha_overrides(result)
 
         return result
 

@@ -207,6 +207,14 @@ class MideaMControlClimate(CoordinatorEntity[MideaMControlCoordinator], ClimateE
             state = copy.deepcopy(self._device_data)
         state.update(overrides)
 
+        # Persist mode/wind overrides so polls never overwrite them.
+        # The APIs only return the running mode (e.g. "cool" while in auto).
+        self.coordinator.set_ha_override(self._device_id, **overrides)
+
+        # Clear overrides when turning off (mode resets on next power-on)
+        if overrides.get("power") == POWER_OFF:
+            self.coordinator.clear_ha_overrides(self._device_id)
+
         # Start cooldown BEFORE sending so polls don't overwrite
         self.coordinator.notify_command_sent()
 
