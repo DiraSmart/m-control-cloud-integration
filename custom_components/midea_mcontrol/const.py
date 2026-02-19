@@ -1,6 +1,6 @@
 """Constants for the Midea M-Control integration."""
 
-VERSION = "2.5.0"
+VERSION = "2.5.1"
 DOMAIN = "midea_mcontrol"
 
 CONF_EMAIL = "email"

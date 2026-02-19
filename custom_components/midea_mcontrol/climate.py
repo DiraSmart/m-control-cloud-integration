@@ -30,6 +30,8 @@ from .const import (
     MAX_TEMP,
     MIN_TEMP,
     MODE_COOL,
+    MODE_FAN,
+    MODE_HEAT,
     POWER_OFF,
     POWER_ON,
     WIND_HIGH,
@@ -39,6 +41,15 @@ from .const import (
 from .coordinator import MideaMControlCoordinator
 
 _LOGGER = logging.getLogger(__name__)
+
+# Mapping from cloud API mode strings to HA HVACMode
+CLOUD_TO_HVAC_MODE: dict[str, HVACMode] = {
+    MODE_COOL: HVACMode.COOL,
+    MODE_HEAT: HVACMode.HEAT,
+    MODE_FAN: HVACMode.FAN_ONLY,
+}
+
+HVAC_MODE_TO_CLOUD: dict[HVACMode, str] = {v: k for k, v in CLOUD_TO_HVAC_MODE.items()}
 
 # Mapping from cloud API wind strings to HA fan modes
 CLOUD_TO_FAN_MODE: dict[str, str] = {
@@ -85,6 +96,8 @@ class MideaMControlClimate(CoordinatorEntity[MideaMControlCoordinator], ClimateE
     _attr_hvac_modes = [
         HVACMode.OFF,
         HVACMode.COOL,
+        HVACMode.HEAT,
+        HVACMode.FAN_ONLY,
     ]
     _attr_fan_modes = [FAN_LOW, FAN_MEDIUM, FAN_HIGH]
     _attr_swing_modes = [SWING_ON, SWING_OFF]
@@ -131,7 +144,8 @@ class MideaMControlClimate(CoordinatorEntity[MideaMControlCoordinator], ClimateE
         power = data.get("power", POWER_OFF)
         if power != POWER_ON:
             return HVACMode.OFF
-        return HVACMode.COOL
+        cloud_mode = data.get("mode", MODE_COOL)
+        return CLOUD_TO_HVAC_MODE.get(cloud_mode, HVACMode.COOL)
 
     @property
     def current_temperature(self) -> float | None:
@@ -199,7 +213,8 @@ class MideaMControlClimate(CoordinatorEntity[MideaMControlCoordinator], ClimateE
         if hvac_mode == HVACMode.OFF:
             await self._send_control(power=POWER_OFF)
         else:
-            await self._send_control(power=POWER_ON, mode=MODE_COOL)
+            cloud_mode = HVAC_MODE_TO_CLOUD.get(hvac_mode, MODE_COOL)
+            await self._send_control(power=POWER_ON, mode=cloud_mode)
 
     async def async_set_temperature(self, **kwargs: Any) -> None:
         """Set the target temperature."""
@@ -216,7 +231,7 @@ class MideaMControlClimate(CoordinatorEntity[MideaMControlCoordinator], ClimateE
                 overrides["power"] = POWER_OFF
             else:
                 overrides["power"] = POWER_ON
-                overrides["mode"] = MODE_COOL
+                overrides["mode"] = HVAC_MODE_TO_CLOUD.get(hvac_mode, MODE_COOL)
 
         await self._send_control(**overrides)
 

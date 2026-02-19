@@ -29,7 +29,7 @@ COMMAND_COOLDOWN_SECONDS = 15
 class MideaMControlCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any]]]):
     """Coordinator that polls locally for fast status and uses cloud for control.
 
-    These AC units only support cool mode with low/mid/high fan.
+    These AC units support cool, heat, and fan modes with low/mid/high fan.
     The local CCM21-i provides fast 5s polling for temperatures and status,
     while the cloud API is used for sending control commands.
     """
