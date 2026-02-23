@@ -200,7 +200,7 @@ class LocalApi:
             page2 = await self._fetch_one_page()
         except (aiohttp.ClientError, TimeoutError) as err:
             _LOGGER.warning("Local API error: %s", err)
-            return []
+            raise
 
         # Merge both pages, dedup by addr
         all_entries: dict[int, str] = {}

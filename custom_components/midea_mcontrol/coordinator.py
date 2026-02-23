@@ -19,6 +19,10 @@ from .aircontrolbase import (
 )
 from .const import DEFAULT_CLOUD_SCAN_INTERVAL, DEFAULT_LOCAL_SCAN_INTERVAL, DOMAIN
 
+# Refresh cloud cache every 5 minutes even when local polling is active,
+# to prevent stale cache data from being shown when local fails.
+CLOUD_CACHE_REFRESH_SECONDS = 300
+
 _LOGGER = logging.getLogger(__name__)
 
 # After sending a control command, ignore status polls for this many seconds
@@ -66,6 +70,10 @@ class MideaMControlCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any]]])
         self._cloud_device_cache: dict[str, dict[str, Any]] = {}
         # Track last command time to avoid overwriting optimistic state
         self._last_command_time: float = 0
+        # Track last cloud cache refresh to keep cache fresh
+        self._last_cloud_refresh: float = 0
+        # Count consecutive local failures for logging
+        self._local_fail_count: int = 0
 
     @property
     def has_local(self) -> bool:
@@ -187,17 +195,62 @@ class MideaMControlCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any]]])
             # Return current data unchanged
             return self.data or {}
 
+        # Periodically refresh cloud cache even when using local polling,
+        # so that if local fails we have recent cloud data to fall back on.
         if self._local_api and self._id_to_addr:
+            await self._maybe_refresh_cloud_cache()
             return await self._update_from_local()
         return await self._update_from_cloud()
+
+    async def _maybe_refresh_cloud_cache(self) -> None:
+        """Refresh the cloud device cache periodically in the background."""
+        now = time.monotonic()
+        if now - self._last_cloud_refresh < CLOUD_CACHE_REFRESH_SECONDS:
+            return
+
+        try:
+            devices = await self.cloud_api.get_devices()
+            for device in devices:
+                if "id" in device:
+                    self._cloud_device_cache[device["id"]] = device
+            self._last_cloud_refresh = now
+            _LOGGER.debug("Cloud cache refreshed (%d devices)", len(devices))
+        except AirControlBaseApiError as err:
+            _LOGGER.debug("Cloud cache refresh failed (non-critical): %s", err)
 
     async def _update_from_local(self) -> dict[str, dict[str, Any]]:
         """Fast update using local CCM21-i API."""
         try:
             local_states = await self._local_api.get_status()
         except Exception as err:
-            _LOGGER.warning("Local poll failed, falling back to cloud: %s", err)
+            self._local_fail_count += 1
+            if self._local_fail_count == 1:
+                _LOGGER.warning(
+                    "Local poll failed, falling back to cloud: %s", err
+                )
+            elif self._local_fail_count % 60 == 0:
+                # Log every ~5 minutes (60 polls * 5s) during sustained failure
+                _LOGGER.warning(
+                    "Local poll still failing (%d consecutive failures): %s",
+                    self._local_fail_count,
+                    err,
+                )
             return await self._update_from_cloud()
+
+        if not local_states:
+            self._local_fail_count += 1
+            if self._local_fail_count == 1:
+                _LOGGER.warning(
+                    "Local poll returned no devices, falling back to cloud"
+                )
+            return await self._update_from_cloud()
+
+        # Local poll succeeded — reset failure counter
+        if self._local_fail_count > 0:
+            _LOGGER.info(
+                "Local poll recovered after %d failures", self._local_fail_count
+            )
+        self._local_fail_count = 0
 
         # Build addr -> local state lookup
         addr_to_state: dict[int, LocalDeviceState] = {
