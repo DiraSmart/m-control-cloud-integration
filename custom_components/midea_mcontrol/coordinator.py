@@ -27,7 +27,7 @@ _LOGGER = logging.getLogger(__name__)
 
 # After sending a control command, ignore status polls for this many seconds
 # to prevent the old state from overwriting the optimistic update.
-COMMAND_COOLDOWN_SECONDS = 15
+COMMAND_COOLDOWN_SECONDS = 60
 
 
 class MideaMControlCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any]]]):

@@ -201,10 +201,12 @@ class MideaMControlClimate(CoordinatorEntity[MideaMControlCoordinator], ClimateE
 
         await self.coordinator.cloud_api.control_device(state)
 
-        # Optimistically update local state - this stays visible
-        # for 15 seconds until the cooldown expires and real data is polled
+        # Optimistically update state and sync the cloud cache too, so that
+        # when local polls overlay onto it, our commanded fields persist
+        # as the base until local catches up with the real unit.
         if self.coordinator.data:
             self.coordinator.data[self._device_id] = state
+        self.coordinator._cloud_device_cache[self._device_id] = dict(state)
         self._last_device_data = state
         self.async_write_ha_state()
 

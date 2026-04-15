@@ -89,12 +89,14 @@ class LocalDeviceState:
         wind = LOCAL_FAN_TO_CLOUD.get(self.fan_mode, WIND_AUTO)
         power = POWER_OFF if not self.is_on else POWER_ON
 
+        # Note: factTemp (ambient temp) is intentionally NOT included.
+        # The CCM21-i local byte6 reports coil temp (T2), not ambient (T1),
+        # so we preserve the cloud-cached factTemp which matches the mcontrol app.
         return {
             "power": power,
             "mode": mode or MODE_AUTO,
             "setTemp": str(self.temperature_setpoint),
             "wind": wind,
-            "factTemp": str(self.temperature),
             "swing": "1" if self.is_swing_on else "0",
         }
 
@@ -135,6 +137,13 @@ def parse_hex_status(addr: int, hex_data: str) -> LocalDeviceState | None:
 
     # Determine power state: mode 4 = OFF
     is_on = ac_mode != LOCAL_MODE_OFF
+
+    _LOGGER.debug(
+        "parse_hex_status addr=%d raw=%s -> ac_mode=%d fan_mode=%d "
+        "setpoint=%d temp=%d swing=%s err=%d is_on=%s",
+        addr, hex_clean, ac_mode, fan_mode, temperature_setpoint,
+        temperature, is_swing_on, error_code, is_on,
+    )
 
     return LocalDeviceState(
         addr=addr,
